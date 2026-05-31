@@ -3,3 +3,8 @@ tgcrypto
 motor
 flask
 dnspython
+pyrogram
+tgcrypto
+flask
+motor
+pymongo
