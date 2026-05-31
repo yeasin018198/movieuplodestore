@@ -6,7 +6,7 @@ from pyrogram import Client, filters, types
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# --- আপনার দেওয়া কনফিগারেশন ---
+# --- কনফিগারেশন ---
 API_ID = 29904834
 API_HASH = "8b4fd9ef578af114502feeafa2d31938"
 BOT_TOKEN = "8888340548:AAHsGn5TNHF2VxecFWM8_RijY4neyM8iQKI"
@@ -31,7 +31,7 @@ db = db_client["file_store_db"]
 collection = db["files"]
 states = db["states"]
 
-# --- অ্যাসিনক্রোনাস রানার (ভার্সেলের জন্য) ---
+# --- অ্যাসিনক্রোনাস রানার ---
 def run_async(coro):
     try:
         loop = asyncio.get_event_loop()
@@ -45,11 +45,14 @@ def run_async(coro):
 def handle_webhook():
     if request.method == "POST":
         update_dict = request.get_json()
-        update = types.Update.actual_instance(update_dict)
         
         async def process():
+            # বটের কানেকশন চেক করে স্টার্ট করা (FloodWait এড়াতে)
             if not bot.is_connected:
                 await bot.start()
+            
+            # ডিকশনারি থেকে পাইগ্রাম আপডেট অবজেক্টে রূপান্তর
+            update = types.Update.read(bot, update_dict)
             await bot.process_update(update)
             
         run_async(process())
@@ -64,8 +67,6 @@ def index():
 @bot.on_message(filters.command("start"))
 async def start_cmd(client, message):
     user = message.from_user
-    
-    # প্রিমিয়াম ডিজাইন বাটন
     buttons = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📢 Join Main Channel", url=MAIN_CHANNEL_LINK),
@@ -77,7 +78,6 @@ async def start_cmd(client, message):
     ])
 
     if len(message.command) > 1:
-        # যদি ইউজার লিংকে ক্লিক করে আসে
         batch_id = message.command[1]
         data = await collection.find_one({"batch_id": batch_id})
         
@@ -93,7 +93,6 @@ async def start_cmd(client, message):
             count = 0
             for index, msg_id in enumerate(file_ids, 1):
                 part_no = f"{index:02d}"
-                # আপনার চাহিদা অনুযায়ী কাস্টম ক্যাপশন ডিজাইন
                 custom_caption = (
                     f"✨ **Name:** `{file_name}`\n"
                     f"💎 **Part:** `{part_no}`\n\n"
@@ -108,7 +107,7 @@ async def start_cmd(client, message):
                         caption=custom_caption
                     )
                     count += 1
-                    await asyncio.sleep(0.5) # ফাস্ট কাজের জন্য মিনিমাম গ্যাপ
+                    await asyncio.sleep(0.5)
                 except Exception as e:
                     print(f"Error: {e}")
             
@@ -121,7 +120,6 @@ async def start_cmd(client, message):
         else:
             await message.reply_text("❌ **Error:** লিংকটি ভ্যালিড নয় অথবা ডাটা ডিলিট করা হয়েছে।")
     else:
-        # সাধারণ স্টার্ট মেসেজ (ইউজার ডিটেইলস সহ প্রিমিয়াম লুক)
         start_text = (
             f"👋 **Welcome, {user.first_name}!**\n\n"
             f"🌟 **User Details:**\n"
@@ -132,8 +130,6 @@ async def start_cmd(client, message):
         )
         await message.reply_text(start_text, reply_markup=buttons)
 
-# --- শুধুমাত্র এডমিন এর জন্য প্রিমিয়াম ফাইল স্টোর লজিক ---
-
 @bot.on_message(filters.command("link") & filters.user(ADMIN_ID))
 async def link_cmd(client, message):
     await states.update_one(
@@ -143,7 +139,7 @@ async def link_cmd(client, message):
     )
     await message.reply_text(
         "📝 **প্রক্রিয়া শুরু হয়েছে!**\n\n"
-        "প্রথমে আপনি যে ফাইলগুলো দেবেন তার একটি **নাম** লিখে পাঠান। এটি প্রতিটি ফাইলের ক্যাপশনে থাকবে।"
+        "প্রথমে আপনি যে ফাইলগুলো দেবেন তার একটি **নাম** লিখে পাঠান।"
     )
 
 @bot.on_message(filters.private & filters.user(ADMIN_ID) & ~filters.command(["done", "link", "start"]))
@@ -161,20 +157,18 @@ async def handle_admin_input(client, message):
         )
         await message.reply_text(
             f"✅ **নাম সেট করা হয়েছে:** `{file_name}`\n\n"
-            f"এখন সিরিয়াল অনুযায়ী ফাইলগুলো পাঠান। সবগুলো ফাইল পাঠানো শেষ হলে নিচের কমান্ডটি দিন:\n\n"
-            f"👉 /done"
+            f"এখন ফাইলগুলো পাঠান। শেষ হলে /done লিখুন।"
         )
     
     elif state == "WAITING_FILES":
         if message.media:
-            # ফাইল লগ চ্যানেলে ফরোয়ার্ড করা হচ্ছে
             sent_msg = await message.forward(LOG_CHANNEL)
             await states.update_one(
                 {"user_id": ADMIN_ID},
                 {"$push": {"data.files": sent_msg.id}}
             )
         else:
-            await message.reply_text("⚠️ **ভুল ইনপুট!** দয়া করে শুধু ভিডিও বা ফাইল পাঠান।")
+            await message.reply_text("⚠️ **ভুল ইনপুট!** শুধু ভিডিও বা ফাইল পাঠান।")
 
 @bot.on_message(filters.command("done") & filters.user(ADMIN_ID))
 async def done_cmd(client, message):
@@ -185,7 +179,7 @@ async def done_cmd(client, message):
         file_list = data.get("files", [])
         
         if not file_list:
-            return await message.reply_text("❌ কোনো ফাইল পাওয়া যায়নি! আগে ফাইল পাঠান।")
+            return await message.reply_text("❌ কোনো ফাইল পাওয়া যায়নি!")
         
         batch_id = str(uuid.uuid4())[:8]
         await collection.insert_one({
@@ -194,7 +188,6 @@ async def done_cmd(client, message):
             "file_list": file_list
         })
         
-        # ডাটা রিসেট
         await states.delete_one({"user_id": ADMIN_ID})
         
         bot_info = await client.get_me()
@@ -211,9 +204,10 @@ async def done_cmd(client, message):
             ])
         )
 
-# ভার্সেল স্টার্টআপ
-async def start_bot():
+# ভার্সেল স্টার্টআপ ফাংশন
+async def init_bot():
     if not bot.is_connected:
         await bot.start()
 
-run_async(start_bot())
+# ফাইল লোড হওয়ার সময় একবার রান হবে
+run_async(init_bot())
