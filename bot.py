@@ -1,13 +1,22 @@
-import os
 import asyncio
+import os
 import uuid
+import sys
 from flask import Flask
 from threading import Thread
+
+# পাইথন ৩.১২+ এবং বিশেষ করে ৩.১৪ ভার্সনে ইভেন্ট লুপ এরর ফিক্স করতে এই অংশটি সবার আগে থাকতে হবে
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 from pyrogram import Client, filters, types
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# --- আপনার দেওয়া কনফিগারেশন (হুবহু) ---
+# --- আপনার দেওয়া অরিজিনাল কনফিগারেশন ---
 API_ID = 29904834
 API_HASH = "8b4fd9ef578af114502feeafa2d31938"
 BOT_TOKEN = "8888340548:AAHsGn5TNHF2VxecFWM8_RijY4neyM8iQKI"
@@ -32,7 +41,7 @@ db = db_client["file_store_db"]
 collection = db["files"]
 states = db["states"]
 
-# --- Flask সার্ভার (Render/Koyeb-এ বটকে ২৪ ঘণ্টা অনলাইন রাখতে) ---
+# --- Flask সার্ভার (Render/Koyeb-এ ২৪ ঘণ্টা অনলাইন রাখতে) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -40,6 +49,7 @@ def index():
     return "<h1>Bot is Running with Premium Features 24/7!</h1>"
 
 def run_flask():
+    # Render/Koyeb এর পোর্ট হ্যান্ডেল করা
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -116,7 +126,7 @@ async def start_cmd(client, message):
         )
         await message.reply_text(start_text, reply_markup=buttons)
 
-# --- শুধুমাত্র এডমিন এর জন্য ফাইল স্টোর লজিক (হুবহু) ---
+# --- শুধুমাত্র এডমিন এর জন্য ফাইল স্টোর লজিক ---
 
 @bot.on_message(filters.command("link") & filters.user(ADMIN_ID))
 async def link_cmd(client, message):
@@ -197,11 +207,11 @@ async def done_cmd(client, message):
 
 # --- মেইন এক্সিকিউশন ---
 if __name__ == "__main__":
-    # Flask থ্রেড শুরু
+    # Flask থ্রেড শুরু (Render/Koyeb হেলথ চেক এর জন্য)
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
     
-    # বট পোলিং শুরু (Render/Koyeb এর জন্য পারফেক্ট)
-    print("Bot is starting with all premium features...")
+    # বট রান করা
+    print("Bot is starting with all premium features and Design...")
     bot.run()
