@@ -1,186 +1,191 @@
 import asyncio
 import os
 import uuid
+import time
+from datetime import datetime
 from flask import Flask, request
-from pyrogram import Client, filters, types
+from pyrogram import Client, filters, errors
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Update
+from pyrogram.errors import UserNotParticipant, FloodWait
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# --- কনফিগারেশন ---
+# --- মাস্টার কনফিগারেশন ---
 API_ID = 29904834
 API_HASH = "8b4fd9ef578af114502feeafa2d31938"
 BOT_TOKEN = "8888340548:AAHsGn5TNHF2VxecFWM8_RijY4neyM8iQKI"
 MONGO_URL = "mongodb+srv://yeasin018198:yeasin018198@cluster0.eu2cspo.mongodb.net/?appName=Cluster0"
 
-ADMIN_ID = 8932594210
+ADMIN_ID = [8932594210] # এখানে আরও আইডি যোগ করতে পারবেন
 LOG_CHANNEL = -1003941205520 
-MAIN_CHANNEL_LINK = "https://t.me/AllMoviesKings"
-ADMIN_USERNAME = "yeasin018198"
+FSUB_CHANNEL = -1003990513533 
+CHANNEL_LINK = "https://t.me/AllMoviesKings"
+ADMIN_USER = "yeasin018198"
+AUTO_DELETE_TIME = 600 # ১০ মিনিট পর মেসেজ ডিলিট হবে (সেকেন্ডে)
 
-# আপনার Webhook URL (উদা: https://your-app.onrender.com)
+# ওয়েব হুক ইউআরএল (Render/Koyeb URL)
 BASE_URL = "https://movieuplodestore.onrender.com" 
 
-# --- ইনিশিয়ালাইজেশন ---
+# --- ডাটাবেস সেটআপ ---
+client_db = AsyncIOMotorClient(MONGO_URL)
+db = client_db["Premium_File_Store"]
+files_db = db["files"]
+users_db = db["users"]
+settings_db = db["settings"]
+
 app = Flask(__name__)
-bot = Client("file_store_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+bot = Client("FileStore", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-db_client = AsyncIOMotorClient(MONGO_URL)
-db = db_client["file_store_db"]
-collection = db["files"]
-states = db["states"]
+# --- মেমোরি স্টোরেজ (Temporary States) ---
+user_states = {}
+maintenance_mode = False
 
-# --- Webhook রুট ---
-
-@app.route('/', methods=['GET'])
-def index():
-    return "<h1>Bot is Running with Premium Features & Webhook 24/7!</h1>"
-
+# --- WEBHOOK ROUTE ---
 @app.route('/webhook', methods=['POST'])
-async def telegram_update():
-    if request.headers.get("content-type") == "application/json":
-        update = Update.de_json(bot, request.get_json())
-        await bot.process_update(update)
-        return "OK", 200
-    return "Forbidden", 403
+async def handle_webhook():
+    update = Update.de_json(bot, request.get_json())
+    await bot.process_update(update)
+    return "OK", 200
 
-# --- বটের কমান্ড ও প্রিমিয়াম ডিজাইন ---
+@app.route('/')
+def health_check():
+    return "<h1>Bot is running 24/7 with Premium Features</h1>"
 
-@bot.on_message(filters.command("start"))
-async def start_cmd(client, message):
+# --- সাহায্যকারী ফাংশন (Middleware) ---
+async def check_fsub(user_id):
+    try:
+        await bot.get_chat_member(FSUB_CHANNEL, user_id)
+        return True
+    except UserNotParticipant:
+        return False
+    except:
+        return True
+
+async def auto_delete_msg(chat_id, message_id):
+    await asyncio.sleep(AUTO_DELETE_TIME)
+    try:
+        await bot.delete_messages(chat_id, message_id)
+    except:
+        pass
+
+# --- বটের মূল কমান্ডসমূহ ---
+
+@bot.on_message(filters.command("start") & filters.private)
+async def start_handler(client, message):
     user = message.from_user
     
-    # প্রিমিয়াম বাটন ডিজাইন
-    buttons = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📢 Join Main Channel", url=MAIN_CHANNEL_LINK),
-            InlineKeyboardButton("👨‍💻 Admin", url=f"https://t.me/{ADMIN_USERNAME}")
-        ],
-        [
-            InlineKeyboardButton("✨ Support Group", url="https://t.me/AllMoviesKings")
-        ]
-    ])
+    # ইউজার সেভ করা
+    await users_db.update_one({"id": user.id}, {"$set": {"name": user.first_name, "date": datetime.now()}}, upsert=True)
 
+    # মেইনটেন্যান্স মোড চেক
+    if maintenance_mode and user.id not in ADMIN_ID:
+        return await message.reply_text("🛠 **বট এখন মেইনটেন্যান্স মোডে আছে। পরে চেষ্টা করুন।**")
+
+    # ফোর্স সাবস্ক্রাইব চেক
+    if not await check_fsub(user.id):
+        btn = [[InlineKeyboardButton("📢 জয়েন করুন", url=CHANNEL_LINK)], [InlineKeyboardButton("🔄 আবার চেষ্টা করুন", url=f"https://t.me/{client.me.username}?start={message.command[1] if len(message.command) > 1 else ''}")]]
+        return await message.reply_text("❌ **ফাইল পাওয়ার আগে আমাদের চ্যানেলে জয়েন করুন!**", reply_markup=InlineKeyboardMarkup(btn))
+
+    # যদি লিংক দিয়ে স্টার্ট করে
     if len(message.command) > 1:
-        # ব্যাচ প্রসেসিং লজিক
         batch_id = message.command[1]
-        data = await collection.find_one({"batch_id": batch_id})
+        data = await files_db.find_one({"batch_id": batch_id})
         
-        if data:
-            file_name = data['file_name']
-            file_ids = data['file_list']
-            
-            status_msg = await message.reply_text(
-                f"⚡ **Processing Batch...**\n\n"
-                f"📁 **Name:** `{file_name}`\n"
-                f"📦 **Total Files:** `{len(file_ids)}`"
-            )
-            
-            count = 0
-            for index, msg_id in enumerate(file_ids, 1):
-                part_no = f"{index:02d}"
-                # আপনার অরিজিনাল কাস্টম ক্যাপশন ডিজাইন
-                custom_caption = (
-                    f"✨ **Name:** `{file_name}`\n"
-                    f"💎 **Part:** `{part_no}`\n\n"
-                    f"🚀 **Fast Uploaded by File Store Bot**\n"
-                    f"📢 **Join Our Channel:** {MAIN_CHANNEL_LINK}"
-                )
-                try:
-                    await client.copy_message(
-                        chat_id=message.chat.id,
-                        from_chat_id=LOG_CHANNEL,
-                        message_id=msg_id,
-                        caption=custom_caption
-                    )
-                    count += 1
-                    await asyncio.sleep(0.6) 
-                except Exception as e:
-                    print(f"Error: {e}")
-            
-            await status_msg.edit(
-                f"✅ **Success!**\n\n"
-                f"📁 **{file_name}** এর সবগুলো ফাইল পাঠানো হয়েছে।\n"
-                f"🚀 **Total Sent:** `{count}`",
-                reply_markup=buttons
-            )
-        else:
-            await message.reply_text("❌ **Error:** লিংকটি ভ্যালিড নয় অথবা ডাটা ডিলিট করা হয়েছে।")
-    else:
-        # আপনার অরিজিনাল প্রিমিয়াম স্টার্ট মেসেজ
-        start_text = (
-            f"👋 **Welcome, {user.first_name}!**\n\n"
-            f"🌟 **User Details:**\n"
-            f"┣ 📛 **Full Name:** `{user.first_name} {user.last_name if user.last_name else ''}`\n"
-            f"┣ 👤 **Username:** @{user.username if user.username else 'None'}\n"
-            f"┗ 🆔 **User ID:** `{user.id}`\n\n"
-            "🚀 এটি একটি **Premium File Store Bot**। আপনি যদি ফাইল স্টোর করতে চান তবে এডমিনের সাথে যোগাযোগ করুন।"
-        )
-        await message.reply_text(start_text, reply_markup=buttons)
+        if not data:
+            return await message.reply_text("❌ লিংকটি কাজ করছে না।")
 
-# --- এডমিন প্যানেল (লিংক তৈরির লজিক) ---
+        msg_list = []
+        status = await message.reply_text("🚀 **ফাইলগুলো পাঠানো হচ্ছে...**")
+        
+        for index, msg_id in enumerate(data['file_ids'], 1):
+            try:
+                caption = f"✨ **Name:** `{data['name']}`\n💎 **Part:** `{index:02d}`\n\n📢 {CHANNEL_LINK}"
+                m = await client.copy_message(chat_id=user.id, from_chat_id=LOG_CHANNEL, message_id=msg_id, caption=caption)
+                msg_list.append(m.id)
+                await asyncio.sleep(0.5)
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+        
+        await status.edit(f"✅ **মোট {len(msg_list)}টি ফাইল পাঠানো হয়েছে।**\n\n⚠️ এই ফাইলগুলো ১০ মিনিট পর ডিলিট হয়ে যাবে। দয়া করে অন্য কোথাও সেভ করে রাখুন।")
+        
+        # অটো ডিলিট টাস্ক
+        for m_id in msg_list:
+            asyncio.create_task(auto_delete_msg(user.id, m_id))
+    else:
+        # প্রিমিয়াম ডিজাইন স্টার্ট
+        welcome_txt = (
+            f"👋 **স্বাগতম, {user.first_name}!**\n\n"
+            f"🆔 **আপনার আইডি:** `{user.id}`\n"
+            f"🚀 **বট স্ট্যাটাস:** অনলাইন\n\n"
+            "ফাইল স্টোর করার জন্য বা লিংক তৈরি করার জন্য এডমিনের সাথে যোগাযোগ করুন।"
+        )
+        buttons = [[InlineKeyboardButton("📢 মেইন চ্যানেল", url=CHANNEL_LINK)], [InlineKeyboardButton("👨‍💻 এডমিন", url=f"https://t.me/{ADMIN_USER}")]]
+        await message.reply_text(welcome_txt, reply_markup=InlineKeyboardMarkup(buttons))
+
+# --- এডমিন প্যানেল ---
 
 @bot.on_message(filters.command("link") & filters.user(ADMIN_ID))
-async def link_cmd(client, message):
-    await states.update_one({"user_id": ADMIN_ID}, {"$set": {"state": "WAITING_NAME"}}, upsert=True)
-    await message.reply_text(
-        "📝 **প্রক্রিয়া শুরু হয়েছে!**\n\n"
-        "প্রথমে আপনি যে ফাইলগুলো দেবেন তার একটি **নাম** লিখে পাঠান।"
-    )
+async def make_link(client, message):
+    user_states[message.from_user.id] = {"step": "NAME"}
+    await message.reply_text("📝 **ফাইলের একটি নাম দিন:**")
 
-@bot.on_message(filters.private & filters.user(ADMIN_ID) & ~filters.command(["done", "link", "start"]))
-async def handle_admin_input(client, message):
-    user_data = await states.find_one({"user_id": ADMIN_ID})
-    if not user_data: return
-    state = user_data.get("state")
-    
-    if state == "WAITING_NAME":
-        await states.update_one(
-            {"user_id": ADMIN_ID}, 
-            {"$set": {"state": "WAITING_FILES", "data": {"name": message.text, "files": []}}}
-        )
-        await message.reply_text(f"✅ **নাম সেট করা হয়েছে:** `{message.text}`\n\nএখন ফাইলগুলো পাঠান। শেষ হলে /done লিখুন।")
-    
-    elif state == "WAITING_FILES":
-        if message.media:
-            sent_msg = await message.forward(LOG_CHANNEL)
-            await states.update_one({"user_id": ADMIN_ID}, {"$push": {"data.files": sent_msg.id}})
-        else:
-            await message.reply_text("⚠️ দয়া করে ফাইল বা ভিডিও পাঠান।")
+@bot.on_message(filters.private & filters.user(ADMIN_ID))
+async def admin_input(client, message):
+    user_id = message.from_user.id
+    if user_id not in user_states: return
 
-@bot.on_message(filters.command("done") & filters.user(ADMIN_ID))
-async def done_cmd(client, message):
-    user_data = await states.find_one({"user_id": ADMIN_ID})
-    if user_data and user_data.get("state") == "WAITING_FILES":
-        data = user_data.get("data")
-        if not data['files']: return await message.reply_text("❌ কোনো ফাইল পাওয়া যায়নি!")
+    state = user_states[user_id]
+    
+    if state["step"] == "NAME":
+        user_states[user_id] = {"step": "FILES", "name": message.text, "ids": []}
+        await message.reply_text("✅ নাম সেভ হয়েছে। এখন ফাইলগুলো পাঠান। শেষ হলে /done লিখুন।")
+    
+    elif state["step"] == "FILES":
+        if message.text == "/done":
+            if not state["ids"]: return await message.reply_text("❌ কোনো ফাইল পাঠাননি!")
             
-        batch_id = str(uuid.uuid4())[:8]
-        await collection.insert_one({"batch_id": batch_id, "file_name": data['name'], "file_list": data['files']})
-        await states.delete_one({"user_id": ADMIN_ID})
-        
-        bot_info = await client.get_me()
-        share_link = f"https://t.me/{bot_info.username}?start={batch_id}"
-        
-        await message.reply_text(
-            f"✨ **Batch Created Successfully!**\n\n"
-            f"📂 **Name:** `{data['name']}`\n"
-            f"📦 **Files:** `{len(data['files'])}`\n\n"
-            f"🔗 **Your Link:**\n`{share_link}`",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Open Link", url=share_link)]])
-        )
+            batch_id = str(uuid.uuid4())[:8]
+            await files_db.insert_one({"batch_id": batch_id, "name": state['name'], "file_ids": state['ids']})
+            link = f"https://t.me/{client.me.username}?start={batch_id}"
+            await message.reply_text(f"✅ **ব্যাচ তৈরি সফল!**\n\n🔗 লিংক: `{link}`")
+            del user_states[user_id]
+        elif message.media:
+            fwd = await message.forward(LOG_CHANNEL)
+            user_states[user_id]["ids"].append(fwd.id)
 
-# --- অটোমেটিক ওয়েব হুক সেটআপ ও রান ---
+# --- ব্রডকাস্ট ও স্ট্যাটাস ---
 
-async def init_bot():
+@bot.on_message(filters.command("stats") & filters.user(ADMIN_ID))
+async def get_stats(client, message):
+    total_users = await users_db.count_documents({})
+    total_files = await files_db.count_documents({})
+    await message.reply_text(f"📊 **বট স্ট্যাটাস:**\n\n👥 মোট ইউজার: {total_users}\n📂 মোট ব্যাচ: {total_files}")
+
+@bot.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
+async def broadcast(client, message):
+    if not message.reply_to_message: return await message.reply_text("মেসেজ রিপ্লাই দিন।")
+    
+    users = users_db.find({})
+    count = 0
+    async for u in users:
+        try:
+            await message.reply_to_message.copy(u['id'])
+            count += 1
+            await asyncio.sleep(0.1)
+        except: pass
+    await message.reply_text(f"✅ ব্রডকাস্ট শেষ! {count} জন ইউজার মেসেজ পেয়েছে।")
+
+# --- রান ফাংশন ---
+async def start_bot():
     await bot.start()
-    webhook_url = f"{BASE_URL.rstrip('/')}/webhook"
-    await bot.set_webhook(webhook_url)
-    print(f"✅ Webhook set to {webhook_url}")
+    # Webhook setup
+    if BASE_URL != "https://your-app.name.onrender.com":
+        await bot.set_webhook(f"{BASE_URL}/webhook")
+        print("Webhook set successfully!")
+    else:
+        print("Webhook URL not found. Running with Simple Polling...")
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
-    loop.create_task(init_bot())
-    
-    # Flask সার্ভার রান (Render/Koyeb পোর্ট হ্যান্ডেল)
+    loop.create_task(start_bot())
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
