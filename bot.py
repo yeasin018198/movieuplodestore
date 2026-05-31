@@ -1,49 +1,57 @@
 import os
 import asyncio
 import uuid
-from flask import Flask, request
+from flask import Flask
+from threading import Thread
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# --- কনফিগারেশন (আপনার দেওয়া তথ্য অনুযায়ী) ---
+# ==================== কনফিগারেশন (আপনার দেওয়া তথ্য) ====================
 API_ID = 29904834
 API_HASH = "8b4fd9ef578af114502feeafa2d31938"
 BOT_TOKEN = "8888340548:AAFAp6DegbixhJfoGiioxeC9LW4dulGO2iA"
 ADMIN_ID = 8932594210
 FILE_CHANNEL = -1003941205520
-USER_SEND_CHANNEL = -1003990513533
+USER_FILE_SEND_CHANNEL = -1003990513533
 MONGO_URL = "mongodb+srv://yeasin018198:yeasin018198@cluster0.eu2cspo.mongodb.net/?appName=Cluster0"
-WEBHOOK_URL = "https://movieuplodestore.onrender.com"
-BOT_URL = "https://t.me/kdramafilestoresBot"
+WEBHOOK_SITE_URL = "https://movieuplodestore.onrender.com"
 BOT_USERNAME = "kdramafilestoresBot"
+# ======================================================================
 
-# --- ডাটাবেস সেটআপ ---
+# --- ডাটাবেস কানেকশন ---
 db_client = AsyncIOMotorClient(MONGO_URL)
-db = db_client["file_store_database"]
-collection = db["file_posts"]
+db = db_client["MovieStoreDB"]
+collection = db["posts"]
 
-# --- বট এবং ওয়েব সার্ভার সেটআপ ---
-app = Client("kdrama_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# --- বট ক্লায়েন্ট ---
+app = Client(
+    "MovieStoreBot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
+# --- ওয়েব সার্ভার (Render/Koyeb এর জন্য) ---
 web_app = Flask(__name__)
 
-# অ্যাডমিন ডাটা স্টোর করার জন্য
-admin_state = {}
-
-# --- ওয়েব রুট (Webhook & Health Check) ---
 @web_app.route('/')
-def index():
-    return "Bot is Running with Webhook!"
+def home():
+    return "Bot is Running! Webhook is Active."
 
-@web_app.route(f'/{BOT_TOKEN}', methods=['POST'])
-def webhook():
-    # এটি মূলত টেলিগ্রাম থেকে আসা আপডেটগুলো রিসিভ করার জন্য (যদি দরকার হয়)
-    return "OK", 200
+def run_web_server():
+    # Render অটোমেটিক পোর্ট হ্যান্ডেল করবে
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host="0.0.0.0", port=port)
 
-# --- বটের ফাংশনসমূহ ---
+# --- অ্যাডমিন স্টেট ম্যানেজমেন্ট ---
+admin_data = {}
+
+# --- বটের কমান্ড ও লজিক ---
 
 @app.on_message(filters.command("start") & filters.private)
-async def start(client, message):
+async def start_handler(client, message):
+    # যদি লিংকের মাধ্যমে আসে (যেমন: /start post_id)
     if len(message.command) > 1:
         post_id = message.command[1]
         post = await collection.find_one({"post_id": post_id})
@@ -52,97 +60,112 @@ async def start(client, message):
             title = post["title"]
             file_ids = post["file_ids"]
             
-            await message.reply_text(f"🚀 **আপনার ফাইলগুলো তৈরি হচ্ছে...**\n📂 **নাম:** {title}\n\nএগুলো এখনই `{USER_SEND_CHANNEL}` চ্যানেলে এবং আপনাকে পাঠানো হচ্ছে।")
+            await message.reply_text(f"🎬 **ফাইলের নাম:** {title}\n\nফাইলগুলো পাঠানো হচ্ছে, দয়া করে অপেক্ষা করুন...")
             
-            for index, f_id in enumerate(file_ids, start=1):
-                caption = f"🎬 {title}\n\n🔹 **Part {index:02d}**"
+            for index, file_id in enumerate(file_ids, start=1):
+                # সিরিয়াল ক্যাপশন: Title + Part 01
+                caption_text = f"{title} - Part {index:02d}"
                 
-                # ফাইলটি ইউজারকে সেন্ড করা
-                await client.copy_message(
-                    chat_id=message.chat.id,
-                    from_chat_id=FILE_CHANNEL,
-                    message_id=f_id,
-                    caption=caption
-                )
-                
-                # ফাইলটি ইউজার ফাইল সেন্ড চ্যানেলে পাঠানো
-                await client.copy_message(
-                    chat_id=USER_SEND_CHANNEL,
-                    from_chat_id=FILE_CHANNEL,
-                    message_id=f_id,
-                    caption=f"{caption}\n\n👤 ইউজার: {message.from_user.mention}"
-                )
-                await asyncio.sleep(1.5) # রেট লিমিট এড়াতে
+                # ১. ইউজারকে ফাইল পাঠানো
+                try:
+                    sent_msg = await client.copy_message(
+                        chat_id=message.chat.id,
+                        from_chat_id=FILE_CHANNEL,
+                        message_id=file_id,
+                        caption=caption_text
+                    )
+                    
+                    # ২. ইউজার ফাইল সেন্ড চ্যানেলে ফাইল পাঠানো
+                    await client.copy_message(
+                        chat_id=USER_FILE_SEND_CHANNEL,
+                        from_chat_id=FILE_CHANNEL,
+                        message_id=file_id,
+                        caption=f"{caption_text}\n\n👤 ইউজার: {message.from_user.mention}"
+                    )
+                    
+                    await asyncio.sleep(1) # ফ্লাড কন্ট্রোল
+                except Exception as e:
+                    print(f"Error sending file: {e}")
         else:
-            await message.reply_text("❌ দুঃখিত, এই লিংকটির ফাইল খুঁজে পাওয়া যায়নি।")
+            await message.reply_text("❌ দুঃখিত! এই লিংকটি ডাটাবেসে পাওয়া যায়নি।")
     else:
-        await message.reply_text(f"স্বাগতম! আমি ফাইল স্টোর বট।\nচ্যানেল লিংক: {BOT_URL}")
+        await message.reply_text("স্বাগতম! আমি একটি ফাইল স্টোর বট। ফাইল পেতে সঠিক লিংকে ক্লিক করুন।")
 
+# /post কমান্ড দিলে অ্যাডমিনের থেকে নাম চাইবে
 @app.on_message(filters.command("post") & filters.user(ADMIN_ID))
-async def post_command(client, message):
-    admin_state[ADMIN_ID] = {"step": "GET_TITLE", "files": []}
-    await message.reply_text("📝 **ফাইলের নাম (Title) দিন:**")
+async def post_init(client, message):
+    admin_data[ADMIN_ID] = {"step": "TITLE", "files": []}
+    await message.reply_text("📝 অনুগ্রহ করে ফাইলের নাম (Title) লিখুন:")
 
+# অ্যাডমিন ইনপুট হ্যান্ডেলার
 @app.on_message(filters.user(ADMIN_ID) & filters.private)
-async def handle_admin_input(client, message):
-    state_data = admin_state.get(ADMIN_ID)
-    if not state_data:
+async def admin_input_handler(client, message):
+    if ADMIN_ID not in admin_data:
         return
 
-    if state_data["step"] == "GET_TITLE":
-        admin_state[ADMIN_ID]["title"] = message.text
-        admin_state[ADMIN_ID]["step"] = "GET_FILES"
-        await message.reply_text(f"✅ নাম সেট হয়েছে: **{message.text}**\n\nএখন ফাইলগুলো (Video/Audio/File) একে একে পাঠান। সব পাঠানো শেষ হলে `/done` লিখুন।")
+    user_step = admin_data[ADMIN_ID]["step"]
 
-    elif state_data["step"] == "GET_FILES":
+    # ১. নাম গ্রহণ করা
+    if user_step == "TITLE":
+        admin_data[ADMIN_ID]["title"] = message.text
+        admin_data[ADMIN_ID]["step"] = "FILES"
+        await message.reply_text(f"✅ টাইটেল সেট হয়েছে: **{message.text}**\n\nএখন ফাইলগুলো (Video, Audio, Photo) একে একে পাঠান। সব পাঠানো শেষ হলে `/done` কমান্ড দিন।")
+
+    # ২. ফাইল গ্রহণ করা
+    elif user_step == "FILES":
         if message.text == "/done":
-            if not state_data["files"]:
-                await message.reply_text("বসেরা, কোনো ফাইল তো দেননি!")
+            if not admin_data[ADMIN_ID]["files"]:
+                await message.reply_text("⚠️ আপনি কোনো ফাইল আপলোড করেননি!")
                 return
             
-            post_id = str(uuid.uuid4())[:8]
+            # ডাটাবেসে সেভ করা
+            post_unique_id = str(uuid.uuid4())[:8]
+            final_title = admin_data[ADMIN_ID]["title"]
+            all_files = admin_data[ADMIN_ID]["files"]
+
             await collection.insert_one({
-                "post_id": post_id,
-                "title": state_data["title"],
-                "file_ids": state_data["files"]
+                "post_id": post_unique_id,
+                "title": final_title,
+                "file_ids": all_files
             })
+
+            share_link = f"https://t.me/{BOT_USERNAME}?start={post_unique_id}"
             
-            share_link = f"https://t.me/{BOT_USERNAME}?start={post_id}"
             await message.reply_text(
-                f"✅ **সফলভাবে ফাইলগুলো সেভ হয়েছে!**\n\n"
-                f"📂 **টাইটেল:** {state_data['title']}\n"
-                f"🖇 **আপনার স্টোর লিংক:** `{share_link}`",
+                f"✅ **সফলভাবে সেভ হয়েছে!**\n\n"
+                f"📂 নাম: {final_title}\n"
+                f"🔢 মোট ফাইল: {len(all_files)}\n\n"
+                f"🔗 আপনার স্টোর লিংক: `{share_link}`",
                 disable_web_page_preview=True
             )
+            # স্টেট ক্লিয়ার করা
             del admin_state[ADMIN_ID]
             return
 
-        # ফাইলগুলো কপি করে মেইন চ্যানেল (FILE_CHANNEL) এ রাখা হচ্ছে
+        # ফাইলগুলো মেইন চ্যানেলে স্টোর করা
         if message.media:
-            msg = await message.copy(FILE_CHANNEL)
-            admin_state[ADMIN_ID]["files"].append(msg.id)
-            count = len(admin_state[ADMIN_ID]["files"])
-            await message.reply_text(f"📥 ফাইল {count:02d} যোগ হয়েছে। আরও দিলে দিন অথবা `/done` দিন।", quote=True)
+            try:
+                # সরাসরি ফাইল চ্যানেল এ কপি করে রাখা হচ্ছে
+                stored_msg = await message.copy(FILE_CHANNEL)
+                admin_data[ADMIN_ID]["files"].append(stored_msg.id)
+                count = len(admin_data[ADMIN_ID]["files"])
+                await message.reply_text(f"📥 ফাইল {count:02d} যোগ হয়েছে। আরও থাকলে দিন অথবা `/done` লিখুন।", quote=True)
+            except Exception as e:
+                await message.reply_text(f"❌ এরর: {e}")
 
 # --- রান ফাংশন ---
-async def main():
+async def start_bot():
     print("বট স্টার্ট হচ্ছে...")
     await app.start()
+    print("বট সফলভাবে চালু হয়েছে!")
     
-    # Webhook সেটআপ (আপনার দেওয়া URL ব্যবহার করে)
-    webhook_info = await app.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
-    if webhook_info:
-        print(f"Webhook successfully set to {WEBHOOK_URL}")
-    
-    # ওয়েব সার্ভার ব্যাকগ্রাউন্ডে চালানো
-    from threading import Thread
-    def run_flask():
-        web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-
-    Thread(target=run_flask, daemon=True).start()
+    # ওয়েব সার্ভার চালু করা (থ্রেড দিয়ে যাতে বটের কাজে বাধা না দেয়)
+    web_thread = Thread(target=run_web_server)
+    web_thread.daemon = True
+    web_thread.start()
     
     await idle()
     await app.stop()
 
 if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(main())
+    app.run(start_bot())
