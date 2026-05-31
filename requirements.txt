@@ -2,9 +2,5 @@ pyrogram
 tgcrypto
 motor
 flask
-dnspython
-pyrogram
-tgcrypto
-flask
-motor
+gunicorn
 pymongo
